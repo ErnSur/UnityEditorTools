@@ -1,0 +1,15 @@
+{
+  "name": "com.ernsur.quickeyeeditortools",
+  "displayName": "Quick Eye Editor Tools",
+  "version": "0.1.0",
+  "unity": "2019.1",
+  "author": {
+    "name": "Ernest Sury\u015b"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ErnSur/UnityEditorTools.git"
+  },
+  "type": "tool",
+  "hideInEditor": false
+}
