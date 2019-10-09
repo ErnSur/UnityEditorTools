@@ -6,146 +6,214 @@ using static UnityEditor.EditorGUILayout;
 using static UnityEngine.GUILayout;
 using HorizontalScope = UnityEditor.EditorGUILayout.HorizontalScope;
 using VerticalScope = UnityEditor.EditorGUILayout.VerticalScope;
+using System.Linq;
 
 namespace QuickEye.EditorTools
 {
-    [EditorTool(_toolName)]
-    class ReplaceTool : EditorTool
+    [CustomEditor(typeof(ReplaceTool))]
+    public class ReplaceToolEditor : Editor
     {
-        private const string _toolName = "Replace Tool";
+        private ReplaceTool tool;
 
-        [SerializeField]
-        Texture2D _toolIcon;
+        private SerializedProperty sample, offset, useOffset, showPreview;
+        private SerializedProperty posMod, rotMod, scaleMod;
 
-        GUIContent _iconContent;
-
-        void OnEnable()
+        private void OnEnable()
         {
-            Debug.Log("Enable Replace Tool");
-            _iconContent = new GUIContent()
-            {
-                image = _toolIcon,
-                text = _toolName,
-                tooltip = _toolName
-            };
+            tool = target as ReplaceTool;
+
+            sample = serializedObject.FindProperty(nameof(tool.sample));
+            offset = serializedObject.FindProperty(nameof(tool.offset));
+            useOffset = serializedObject.FindProperty(nameof(tool.replaceWithOffset));
+            showPreview = serializedObject.FindProperty(nameof(tool.showPreview));
+
+            posMod = serializedObject.FindProperty("_positionMod");
+            rotMod = serializedObject.FindProperty("_rotationMod");
+            scaleMod = serializedObject.FindProperty("_scaleMod");
         }
 
-        public override GUIContent toolbarIcon
+        public override void OnInspectorGUI()
         {
-            get { return _iconContent; }
-        }
-
-        // This is called for each window that your tool is active in. Put the functionality of your tool here.
-        public override void OnToolGUI(EditorWindow window)
-        {
-            EditorGUI.BeginChangeCheck();
-
-            Vector3 position = Tools.handlePosition;
-
-            using (new Handles.DrawingScope(Color.green))
+            using (var s = new EditorGUI.ChangeCheckScope())
             {
-                position = Handles.Slider(position, Vector3.right);
+                DrawReplaceSection();
+                if (s.changed)
+                {
+                    serializedObject.ApplyModifiedProperties();
+                }
             }
-
-            if (EditorGUI.EndChangeCheck())
-            {
-                Vector3 delta = position - Tools.handlePosition;
-
-                Undo.RecordObjects(Selection.transforms, "Move Platform");
-
-                foreach (var transform in Selection.transforms)
-                    transform.position += delta;
-            }
-        }
-
-        [SerializeField]
-        private GameObject _prefab;
-
-        [SerializeField]
-        private TransformValues _offset;
-
-        [SerializeField]
-        private ReplaceTransformation _positionMod, _rotationMod, _scaleMod;
-
-        [SerializeField]
-        private bool _replaceWithOffset;
-
-        private void OnMenuGUI()
-        {
-            DrawOffsetSection();
-            DrawReplaceSection();
         }
 
         private void DrawReplaceSection()
         {
-            using (new VerticalScope("box"))
+            using (new VerticalScope())
             {
-                DrawTransformModificationSection();
-                _replaceWithOffset = Toggle("Use Offset", _replaceWithOffset);
+                PropertyField(posMod);
+                PropertyField(rotMod);
+                PropertyField(scaleMod);
+
                 using (new HorizontalScope())
                 {
-                    _prefab = ObjectField(_prefab, typeof(GameObject), false) as GameObject;
+                    PropertyField(sample);
 
-                    using (new EditorGUI.DisabledScope(_prefab == null))
+                    using (new EditorGUI.DisabledScope(sample.objectReferenceValue == null))
                     {
-                        if (Button("Replace Selected With Prefab"))
+                        if (Button("Replace Selected With sample"))
                         {
-                            ReplaceObjectsWithPrefab(Selection.gameObjects, _prefab, _replaceWithOffset ? _offset : new TransformValues());
+                            tool.Replace();
+                        }
+                    }
+                }
+                PropertyField(showPreview);
+
+                PropertyField(useOffset);
+                if (useOffset.boolValue)
+                {
+                    PropertyField(offset);
+
+                    using (new EditorGUI.DisabledScope(Selection.transforms.Length != 2))
+                    using (new HorizontalScope())
+                    {
+                        if (Button("Set Offset To Selection Difference"))
+                        {
+                            //offset.managedReferenceValue = TransformValues.GetDifference(Selection.transforms[0], Selection.transforms[1]);
+                            tool.offset = TransformValues.GetDifference(Selection.transforms[0], Selection.transforms[1]);
+                            EditorUtility.SetDirty(target);
+                            serializedObject.Update();
                         }
                     }
                 }
             }
         }
+    }
 
-        private void DrawOffsetSection()
+    [EditorTool(_toolName)]
+    class ReplaceTool : EditorToolPlus
+    {
+        private const string _toolName = "Replace Tool";
+
+        [SerializeField]
+        public GameObject sample, preview;
+
+        [SerializeField]
+        public bool replaceWithOffset, showPreview;
+
+        [SerializeField]
+        public TransformValues offset;
+
+        [SerializeField]
+        private TransformOperation _positionMod = TransformOperation.UseOldValue, _rotationMod = TransformOperation.UseNewValue, _scaleMod = TransformOperation.UseNewValue;
+
+        protected override void OnEnable()
         {
-            using (new VerticalScope("box"))
-            {
-                Label("Offset");
-                _offset.position = Vector3Field("position", _offset.position);
-                _offset.rotation = Vector3Field("rotation", _offset.rotation);
-                _offset.scale = Vector3Field("scale", _offset.scale);
+            base.OnEnable();
 
-                using (new HorizontalScope())
-                {
-                    if (Button("Set Offset To Selection Difference") && Selection.transforms.Length == 2)
-                    {
-                        _offset = TransformValues.GetDifference(Selection.transforms[0], Selection.transforms[1]);
-                    }
-                    if (Button("Add Offset To Selection"))
-                    {
-                        TransformObjectsBy(Selection.gameObjects.Select(o => o.transform).ToArray());
-                    }
-                }
+            iconContent.text =
+            iconContent.tooltip = _toolName;
+        }
+
+        protected override void OnActivate()
+        {
+            EditorApplication.ExecuteMenuItem("Window/General/Active Tool");
+            
+            TogglePreviewObject(true);
+        }
+
+        protected override void OnDeactivate()
+        {
+            TogglePreviewObject(false);
+        }
+
+        private void TogglePreviewObject(bool value)
+        {
+            if(sample == null)
+            {
+                return;
+            }
+            Debug.Log($"Toggle {value}");
+            if (value)
+            {
+                preview = InstantiateSample(null);
+                //previewObj.hideFlags = HideFlags.HideAndDontSave;
+            }
+            else if(preview != null)
+            {
+                DestroyImmediate(preview);
             }
         }
 
-        private void DrawTransformModificationSection()
+        private GameObject InstantiateSample(Transform parent)
         {
-            using (new HorizontalScope())
+            GameObject newObj;
+
+            if (PrefabUtility.GetPrefabInstanceHandle(sample) != null)
             {
-                DrawModificationTemplate("Position", ref _positionMod);
-                DrawModificationTemplate("Rotation", ref _rotationMod);
-                DrawModificationTemplate("Scale", ref _scaleMod);
+                newObj = PrefabUtility.InstantiatePrefab(sample, parent) as GameObject;
             }
-            void DrawModificationTemplate(string label, ref ReplaceTransformation mod)
+            else
             {
-                using (new VerticalScope())
-                {
-                    PrefixLabel(label);
-                    mod = (ReplaceTransformation)EnumPopup(mod);
-                }
+                newObj = Instantiate(sample, parent) as GameObject;
             }
+
+            return newObj;
         }
 
-        private void ReplaceObjectsWithPrefab(GameObject[] objects, GameObject prefab, TransformValues offset)
+        public override void OnToolGUI(EditorWindow window)
+        {
+            if(Selection.transforms.Length < 1)
+            {
+                return;
+            }
+            if(showPreview && preview == null)
+            {
+                TogglePreviewObject(true);
+            }
+            if (preview)
+            {
+                var p = preview.transform;
+                var t = Selection.transforms[0];
+                p.parent = t.parent;
+                p.localPosition = t.localPosition;
+                p.localEulerAngles = t.localEulerAngles;
+                p.localScale = t.localScale;
+            }
+
+            //EditorGUI.BeginChangeCheck();
+
+            //Vector3 position = Tools.handlePosition;
+
+            //using (new Handles.DrawingScope(Color.green))
+            //{
+            //    position = Handles.Slider(position, Vector3.right);
+            //}
+
+            //if (EditorGUI.EndChangeCheck())
+            //{
+            //    Vector3 delta = position - Tools.handlePosition;
+
+            //    Undo.RecordObjects(Selection.transforms, "Move Platform");
+
+            //    foreach (var transform in Selection.transforms)
+            //        transform.position += delta;
+            //}
+        }
+
+
+        public void Replace()
+        {
+            ReplaceObjectsWithPrefab(Selection.gameObjects, sample, replaceWithOffset ? offset : new TransformValues());
+        }
+
+        public void ReplaceObjectsWithPrefab(GameObject[] objects, GameObject sample, TransformValues offset)
         {
             Selection.objects = objects.Select(ReplaceWithPrefab).ToArray();
 
             GameObject ReplaceWithPrefab(GameObject obj)
             {
                 var hierarchyIndex = obj.transform.GetSiblingIndex();
-                var newObj = PrefabUtility.InstantiatePrefab(prefab, obj.transform.parent) as GameObject;
+
+                GameObject newObj = InstantiateSample(obj.transform.parent);
+
                 Undo.RegisterCreatedObjectUndo(newObj, "Instantiated Prefab");
 
                 SetupTransformValues();
@@ -163,20 +231,20 @@ namespace QuickEye.EditorTools
                     offset.AddTo(newObj.transform);
                 }
 
-                Vector3 GetNewTransformationValue(ReplaceTransformation transformation, Vector3 oldValue, Vector3 newValue)
+                Vector3 GetNewTransformationValue(TransformOperation transformation, Vector3 oldValue, Vector3 newValue)
                 {
                     switch (transformation)
                     {
                         default:
-                        case ReplaceTransformation.UseOldValue:
+                        case TransformOperation.UseOldValue:
                             {
                                 return oldValue;
                             }
-                        case ReplaceTransformation.UseNewValue:
+                        case TransformOperation.UseNewValue:
                             {
                                 return newValue;
                             }
-                        case ReplaceTransformation.AddNewValue:
+                        case TransformOperation.AddNewValue:
                             {
                                 return oldValue + newValue;
                             }
@@ -190,80 +258,15 @@ namespace QuickEye.EditorTools
             foreach (var transform in objects)
             {
                 Undo.RecordObject(transform, "Transformed object with offset");
-                _offset.AddTo(transform);
+                offset.AddTo(transform);
             }
         }
 
-        [Flags]
-        public enum ReplaceTransformation
+        public enum TransformOperation
         {
             UseOldValue,
             UseNewValue,
             AddNewValue
-        }
-    }
-
-    [Serializable]
-    public struct TransformValues
-    {
-        public Vector3 position, rotation, scale;
-
-        public TransformValues(Vector3 position, Vector3 rotation, Vector3 scale)
-        {
-            this.position = position;
-            this.rotation = rotation;
-            this.scale = scale;
-        }
-
-        public TransformValues(Transform transform) : this(transform.position, transform.eulerAngles, transform.localScale)
-        {
-        }
-
-        public static TransformValues GetDifference(Transform lhs, Transform rhs)
-        {
-            return new TransformValues
-            {
-                position = lhs.localPosition - rhs.localPosition,
-                rotation = lhs.localEulerAngles - rhs.localEulerAngles,
-                scale = lhs.localScale - rhs.localScale
-            };
-        }
-
-        public void AddTo(Transform transform, bool local = true)
-        {
-            if (local)
-            {
-                transform.localPosition += position;
-                transform.localEulerAngles += rotation;
-                transform.localScale += scale;
-            }
-            else
-            {
-                transform.position += position;
-                transform.rotation *= Quaternion.Euler(rotation);
-                transform.localScale += scale;
-            }
-        }
-
-        public void SetTo(Transform transform, bool local = true)
-        {
-            if (local)
-            {
-                transform.localPosition = position;
-                transform.localEulerAngles = rotation;
-                transform.localScale = scale;
-            }
-            else
-            {
-                transform.position = position;
-                transform.rotation = Quaternion.Euler(rotation);
-                transform.localScale = scale;
-            }
-        }
-
-        public static implicit operator TransformValues(Transform t)
-        {
-            return new TransformValues(t);
         }
     }
 }
